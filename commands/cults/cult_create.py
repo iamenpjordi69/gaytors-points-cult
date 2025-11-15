@@ -32,7 +32,7 @@ class CultCreate(commands.Cog):
         leader_role: discord.Role = None,
         officer_role: discord.Role = None
     ):
-        # Permission check
+
         if not await check_bot_manager(self.bot, interaction):
             await interaction.response.send_message("❌ You need Bot Manager role to use this command!", ephemeral=True)
             return
@@ -41,7 +41,7 @@ class CultCreate(commands.Cog):
             await interaction.response.send_message("❌ Database not available!", ephemeral=True)
             return
         
-        # Validation
+
         if len(cult_name) > 50:
             await interaction.response.send_message("❌ Cult name must be 50 characters or less!", ephemeral=True)
             return
@@ -50,7 +50,7 @@ class CultCreate(commands.Cog):
             await interaction.response.send_message("❌ Cult description must be 100 characters or less!", ephemeral=True)
             return
         
-        # Check for duplicates
+
         existing_name = await self.bot.db.cults.find_one({
             "guild_id": interaction.guild.id,
             "cult_name": {"$regex": f"^{cult_name}$", "$options": "i"},
@@ -69,7 +69,7 @@ class CultCreate(commands.Cog):
             await interaction.response.send_message("❌ This emoji is already used by another cult!", ephemeral=True)
             return
         
-        # Check for role conflicts
+
         role_conflicts = []
         if member_role:
             existing_member_role = await self.bot.db.cults.find_one({
@@ -80,7 +80,7 @@ class CultCreate(commands.Cog):
             if existing_member_role:
                 role_conflicts.append(f"Member role {member_role.mention}")
         
-        # Leader role can be shared - remove this check
+
         
         if officer_role:
             existing_officer_role = await self.bot.db.cults.find_one({
@@ -95,7 +95,7 @@ class CultCreate(commands.Cog):
             await interaction.response.send_message(f"❌ These roles are already used by other cults: {', '.join(role_conflicts)}", ephemeral=True)
             return
         
-        # Check if leader is already in a cult
+
         existing_leader = await self.bot.db.cults.find_one({
             "guild_id": interaction.guild.id,
             "members": cult_leader.id,
@@ -105,7 +105,7 @@ class CultCreate(commands.Cog):
             await interaction.response.send_message("❌ This user is already in another cult!", ephemeral=True)
             return
         
-        # Create cult
+
         cult_data = {
             "guild_id": interaction.guild.id,
             "cult_name": cult_name,
@@ -123,7 +123,7 @@ class CultCreate(commands.Cog):
         
         result = await self.bot.db.cults.insert_one(cult_data)
         
-        # Assign roles
+
         try:
             if member_role:
                 await cult_leader.add_roles(member_role, reason=f"Joined cult: {cult_name}")
@@ -132,7 +132,7 @@ class CultCreate(commands.Cog):
         except discord.Forbidden:
             pass
         
-        # Create embed
+
         embed = discord.Embed(
             title=f"{cult_icon} Cult Created",
             description=f"**{cult_name}** has been established!",

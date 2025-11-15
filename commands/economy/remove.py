@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-from datetime import datetime
+from datetime import datetime, timezone
 
 class Remove(commands.Cog):
     def __init__(self, bot):
@@ -27,22 +27,33 @@ class Remove(commands.Cog):
             user_id = interaction.user.id
             guild_id = interaction.guild.id
             
-            # Save negative points transaction
-            await self.bot.db.points.insert_one({
-                "user_id": user_id,
-                "user_name": str(interaction.user),
-                "guild_id": guild_id,
-                "guild_name": interaction.guild.name,
-                "amount": -points,
-                "type": "remove",
-                "timestamp": datetime.utcnow()
-            })
+            # Get multiplier setting
+            multiplier_data = await self.bot.db.multipliers.find_one({"guild_id": guild_id, "active": True})
+            multiplier = multiplier_data["multiplier"] if multiplier_data else 1.0
+            
+            # Calculate final points
+            final_points = points * multiplier
             
             # Get user's cult for saving
             user_cult_data = await self.bot.db.cults.find_one({
                 "guild_id": guild_id,
                 "members": user_id,
                 "active": True
+            })
+            
+            # Save negative points transaction
+            await self.bot.db.points.insert_one({
+                "user_id": user_id,
+                "user_name": str(interaction.user),
+                "guild_id": guild_id,
+                "guild_name": interaction.guild.name,
+                "amount": -final_points,
+                "base_amount": -points,
+                "multiplier_used": multiplier,
+                "cult_id": str(user_cult_data["_id"]) if user_cult_data else None,
+                "cult_name": user_cult_data["cult_name"] if user_cult_data else None,
+                "type": "remove",
+                "timestamp": datetime.utcnow()
             })
             
             # Save negative win transaction
@@ -72,8 +83,17 @@ class Remove(commands.Cog):
             total_points_result = await self.bot.db.points.aggregate(points_pipeline).to_list(1)
             total_wins_result = await self.bot.db.wins.aggregate(wins_pipeline).to_list(1)
             
-            user_points = total_points_result[0]["total"] if total_points_result else -points
+            user_points = total_points_result[0]["total"] if total_points_result else -final_points
             user_wins = total_wins_result[0]["total"] if total_wins_result else -1
+            
+            # Get user's cult
+            user_cult = await self.bot.db.cults.find_one({
+                "guild_id": guild_id,
+                "members": user_id,
+                "active": True
+            })
+            
+            cult_text = f"{user_cult['cult_icon']} {user_cult['cult_name']}" if user_cult else "None"
             
             # Create embed
             embed = discord.Embed(color=0xff0000)
@@ -81,13 +101,22 @@ class Remove(commands.Cog):
                 name=interaction.guild.name,
                 icon_url=interaction.guild.icon.url if interaction.guild.icon else None
             )
+            
+            # Build description dynamically
             embed.description = (
-                f"{points:,.1f} points removed from your balance\n"
+                f"{final_points:,.1f} points removed from your balance\n"
                 f"**New Points:** {user_points:,.1f}\n"
-                f"**New Wins:** {user_wins:,}\n"
-                f"**Multiplier:** Coming Soon\n"
-                f"**Cult:** Coming Soon"
+                f"**New Wins:** {user_wins:,}"
             )
+            
+            if multiplier > 1:
+                embed.description += f"\n**Multiplier:** {multiplier}x"
+            
+            if user_cult:
+                embed.description += f"\n**Cult:** {cult_text}"
+            
+            if multiplier > 1:
+                embed.description += f"\n*({points:,.1f} x {multiplier} = {final_points:,.1f})*"
             
             await interaction.response.send_message(embed=embed)
             

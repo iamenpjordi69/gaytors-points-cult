@@ -45,8 +45,8 @@ class Help(commands.Cog):
             
             "**Bot Manager Commands** (Bot Manager role required)\n"
             "• **/bot_manager** - Set bot manager role (Admin only)\n"
-            "• **/addscore** - Add points to a user\n"
-            "• **/addwin** - Add wins to a user\n"
+            "• **/addscores_admin** - Add points to a user\n"
+            "• **/addwins_admin** - Add wins to a user\n"
             "• **/removescore** - Remove points from a user\n"
             "• **/removewin** - Remove wins from a user\n"
             "• **/set_multiplier** - Set server multiplier\n"

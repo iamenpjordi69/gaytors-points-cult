@@ -44,14 +44,17 @@ class CultInfo(commands.Cog):
         leader = interaction.guild.get_member(cult["cult_leader_id"])
         leader_text = leader.mention if leader else "Unknown"
         
-        # Get member list
+        # Get member list (only members currently in server)
         members = []
         officers = []
+        active_members = []
         
         for member_id in cult["members"]:
             member = interaction.guild.get_member(member_id)
             if not member:
                 continue
+            
+            active_members.append(member_id)
             
             # Check if member has officer role
             if cult.get("officer_role_id"):
@@ -73,7 +76,7 @@ class CultInfo(commands.Cog):
         
         # Basic info
         embed.add_field(name="Leader", value=leader_text, inline=True)
-        embed.add_field(name="Total Members", value=str(len(cult['members'])), inline=True)
+        embed.add_field(name="Total Members", value=str(len(active_members)), inline=True)
         embed.add_field(name="Created", value=f"<t:{int(cult['created_at'].timestamp())}:R>", inline=True)
         
         # Officers

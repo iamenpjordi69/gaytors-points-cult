@@ -86,6 +86,10 @@ class LeaderboardView(discord.ui.View):
                 title = f"{self.mode.title()} Leaderboard - Today (GMT) - {self.guild_name}"
             else:
                 title = f"{self.mode.title()} Leaderboard - Last {self.days + 1} days (GMT) - {self.guild_name}"
+        elif self.month:
+            year, month = self.month
+            month_name = calendar.month_name[month]
+            title = f"{self.mode.title()} Leaderboard - {month_name} {year} - {self.guild_name}"
         else:
             title = f"{self.mode.title()} Leaderboard - All Time - {self.guild_name}"
         

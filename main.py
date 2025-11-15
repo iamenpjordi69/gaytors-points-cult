@@ -7,7 +7,9 @@ from pathlib import Path
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 from aiohttp import web
-from datetime import datetime, timezone
+import aiohttp
+import re
+from datetime import datetime, timezone, timedelta
 load_dotenv()
 logging.basicConfig(
     level=logging.INFO,
@@ -20,7 +22,7 @@ logging.basicConfig(
 logger = logging.getLogger('TerritorialBot')
 class WinLogClaimView(discord.ui.View):
     def __init__(self, bot, points, message_id, guild_id, original_message):
-        super().__init__(timeout=300)  
+        super().__init__(timeout=300)
         self.bot = bot
         self.points = points
         self.message_id = message_id
@@ -28,6 +30,9 @@ class WinLogClaimView(discord.ui.View):
         self.claimed_users = {}  
         self.original_message = original_message
         self.message = None  
+        self.creation_time = datetime.now(timezone.utc)
+    
+
     @discord.ui.button(label="Claim (1x)", style=discord.ButtonStyle.secondary, emoji="🎯")
     async def claim_1x(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.claim_points(interaction, 1.0)
@@ -40,6 +45,14 @@ class WinLogClaimView(discord.ui.View):
     async def claim_points(self, interaction: discord.Interaction, multiplier: float):
         try:
             user_id = interaction.user.id
+        
+            if datetime.now(timezone.utc) - self.creation_time > timedelta(minutes=5):
+                try:
+                    await interaction.response.send_message("❌ This win log has expired!", ephemeral=True)
+                except (discord.InteractionResponded, discord.NotFound):
+                    pass
+                return
+            
             if user_id in self.claimed_users:
                 try:
                     await interaction.response.send_message("❌ You already claimed points from this log!", ephemeral=True)
@@ -49,68 +62,84 @@ class WinLogClaimView(discord.ui.View):
             self.claimed_users[user_id] = multiplier
             final_points = self.points * multiplier
             success = await self.bot.add_winlog_points(user_id, self.guild_id, final_points)
+
             if success:
                 try:
+
                     server_multiplier_data = await self.bot.db.multipliers.find_one({"guild_id": self.guild_id, "active": True})
                     server_multiplier = server_multiplier_data["multiplier"] if server_multiplier_data else 1.0
                     display_points = final_points * server_multiplier
+                    
+
                     try:
                         embed = discord.Embed(
                             title="🏆 Win Log",
                             description=self.original_message,
                             color=0x00ff00
                         )
+                        
                         claimed_mentions = []
                         for uid, mult in self.claimed_users.items():
                             claimed_mentions.append(f"<@{uid}> ({mult}x)")
+                        
                         if claimed_mentions:
                             embed.add_field(
                                 name="Claimed by",
                                 value="\n".join(claimed_mentions[:10]),
                                 inline=False
                             )
+                        
                         embed.set_footer(text="Click to claim points • Expires in 5 minutes")
                         
                         await interaction.message.edit(embed=embed, view=self)
                     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                         pass
+                    
+
                     embed = discord.Embed(
                         title="✅ Points Claimed!",
                         description=f"You received **{display_points:,.1f} points** and **1 win**!",
                         color=0x00ff00
                     )
+                    
                     if multiplier > 1.0:
                         embed.description += f"\n*Base: {self.points} x {multiplier} = {final_points} points*"
                     if server_multiplier > 1.0:
                         embed.description += f"\n*Server multiplier: {server_multiplier}x*"
+                    
                     await interaction.response.send_message(embed=embed, ephemeral=True)
+                    
                 except Exception as e:
                     try:
                         await interaction.response.send_message("✅ Points added successfully!", ephemeral=True)
                     except:
                         pass
             else:
-                self.claimed_users.pop(user_id, None)  # Remove from claimed if failed
+                self.claimed_users.pop(user_id, None)
                 try:
                     await interaction.response.send_message("❌ Failed to add points!", ephemeral=True)
                 except:
                     pass
+                
         except Exception as e:
-            self.claimed_users.pop(user_id, None)  # Remove from claimed if error
+            self.claimed_users.pop(user_id, None)
             try:
                 await interaction.response.send_message("❌ An error occurred!", ephemeral=True)
             except:
                 pass
             logger.error(f"Error in winlog claim: {e}")
+    
     async def on_timeout(self):
         try:
             if self.message:
+
                 embed = discord.Embed(
                     title="⏰ Win Log Expired",
                     description=self.original_message,
                     color=0x808080
                 )
-                # Add claimed users if any
+                
+
                 if self.claimed_users:
                     claimed_mentions = []
                     for uid, mult in self.claimed_users.items():
@@ -121,10 +150,14 @@ class WinLogClaimView(discord.ui.View):
                         value="\n".join(claimed_mentions[:10]),
                         inline=False
                     )
+                
                 embed.set_footer(text="This win log has expired")
+                
+
                 await self.message.edit(embed=embed, view=None)
         except Exception as e:
             logger.error(f"Error in winlog timeout: {e}")
+
 class TerritorialBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -137,43 +170,62 @@ class TerritorialBot(commands.Bot):
             intents=intents,
             help_command=None
         )
+        
         self.mongodb_client = None
         self.db = None
-        self.join_channel_id = 123
-        self.leave_channel_id = 123
-        self.log_channel_id = 123 
+        self.join_channel_id = 1391460533982462023
+        self.leave_channel_id = 1391460563401576659
+        self.log_channel_id = 1391463375304921108
         self.reward_monitor = None
         self.processed_rewards = set()
         self.last_log_time = 0
         self.winlog_claims = {}
         self.processed_winlogs = set()
         self.winlog_monitor = None
+        self.last_winlog_time = None
+        
     async def setup_hook(self):
+        """Called when the bot is starting up"""
         logger.info("Setting up bot...")
+        
+
         await self.connect_mongodb()
+        
+
         await self.load_commands()
+        
+
         try:
             synced = await self.tree.sync()
             logger.info(f"Synced {len(synced)} slash commands")
+            
 
             if len(self.guilds) == 1:
                 guild = self.guilds[0]
                 synced_guild = await self.tree.sync(guild=guild)
                 logger.info(f"Force synced {len(synced_guild)} commands for guild {guild.name}")
+                
         except Exception as e:
             logger.error(f"Failed to sync commands: {e}")
+    
     async def connect_mongodb(self):
+        """Connect to MongoDB"""
         try:
             mongodb_uri = os.getenv('MONGODB_URI')
             if not mongodb_uri:
                 logger.error("MONGODB_URI not found in environment variables")
                 return
+                
             self.mongodb_client = AsyncIOMotorClient(mongodb_uri)
-            self.db = self.mongodb_client.cults
+            self.db = self.mongodb_client.your_mongo_collection_name
+            
+
             await self.mongodb_client.admin.command('ping')
             logger.info("Successfully connected to MongoDB")
+            
         except Exception as e:
             logger.error(f"Failed to connect to MongoDB: {e}")
+    
     async def load_commands(self):
         """Load all commands from commands folder and subfolders"""
         commands_path = Path("commands")
@@ -185,12 +237,12 @@ class TerritorialBot(commands.Bot):
         
         loaded_count = 0
         
-        # Walk through all Python files in commands folder and subfolders
+
         for py_file in commands_path.rglob("*.py"):
             if py_file.name.startswith("__"):
                 continue
                 
-            # Convert path to module format
+
             module_path = str(py_file.with_suffix("")).replace(os.sep, ".")
             
             try:
@@ -207,12 +259,12 @@ class TerritorialBot(commands.Bot):
         logger.info(f"Bot logged in as {self.user} (ID: {self.user.id})")
         logger.info(f"Connected to {len(self.guilds)} guilds")
         
-        # Set bot status
+
         activity = discord.Game(name="Territorial.io Cults")
         await self.change_presence(activity=activity)
         logger.info("Bot status set to 'Playing Territorial.io Cults'")
         
-        # Send startup log
+
         log_channel = self.get_channel(self.log_channel_id)
         if log_channel:
             embed = discord.Embed(
@@ -225,18 +277,29 @@ class TerritorialBot(commands.Bot):
             embed.add_field(name="Commands", value=str(len(self.tree.get_commands())), inline=True)
             await log_channel.send(embed=embed)
         
+
         self.start_reward_monitoring()
+        
+
         self.start_winlog_monitoring()
+        
+
         self.start_war_monitoring()
+        
+
+    
     async def on_guild_join(self, guild):
         """Called when bot joins a guild"""
         try:
+
             async for entry in guild.audit_logs(action=discord.AuditLogAction.bot_add, limit=1):
                 if entry.target.id == self.user.id:
                     inviter = entry.user
                     break
             else:
                 inviter = None
+            
+
             channel = self.get_channel(self.join_channel_id)
             if channel:
                 embed = discord.Embed(
@@ -247,10 +310,15 @@ class TerritorialBot(commands.Bot):
                 embed.add_field(name="Server", value=f"{guild.name} (ID: {guild.id})", inline=False)
                 embed.add_field(name="Members", value=str(guild.member_count), inline=True)
                 embed.add_field(name="Owner", value=str(guild.owner), inline=True)
+                
                 if inviter:
                     embed.add_field(name="Added by", value=f"{inviter} (ID: {inviter.id})", inline=False)
+                
                 embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
+                
                 await channel.send(embed=embed)
+            
+
             if self.db:
                 await self.db.guild_events.insert_one({
                     "event": "join",
@@ -261,12 +329,16 @@ class TerritorialBot(commands.Bot):
                     "inviter_name": str(inviter) if inviter else None,
                     "timestamp": datetime.now(timezone.utc)
                 })
+            
             logger.info(f"Joined guild: {guild.name} (ID: {guild.id}) - Added by: {inviter}")
+            
         except Exception as e:
             logger.error(f"Error handling guild join: {e}")
+    
     async def on_guild_remove(self, guild):
         """Called when bot leaves a guild"""
         try:
+
             channel = self.get_channel(self.leave_channel_id)
             if channel:
                 embed = discord.Embed(
@@ -282,7 +354,7 @@ class TerritorialBot(commands.Bot):
                 
                 await channel.send(embed=embed)
             
-            # Log to database
+
             if self.db:
                 await self.db.guild_events.insert_one({
                     "event": "leave",
@@ -318,10 +390,10 @@ class TerritorialBot(commands.Bot):
                 
                 current_time = time.time()
                 
-                # Get all active reward settings sorted by amount (highest first)
+
                 rewards = await self.db.reward_roles.find({"active": True}).sort("amount", -1).to_list(None)
                 
-                # Log every 5 seconds to Discord
+
                 if current_time - self.last_log_time >= 5:
                     log_channel = self.get_channel(1392150722698809374)
                     if log_channel and len(rewards) > 0:
@@ -332,7 +404,7 @@ class TerritorialBot(commands.Bot):
                         await log_channel.send(embed=embed)
                     self.last_log_time = current_time
                 
-                # Group rewards by guild and type to find highest eligible roles
+
                 guild_rewards = {}
                 for reward in rewards:
                     guild_id = reward["guild_id"]
@@ -350,7 +422,7 @@ class TerritorialBot(commands.Bot):
                         if not type_rewards:
                             continue
                         
-                        # Get all users' totals for this type in this guild
+
                         collection = self.db.points if reward_type == "points" else self.db.wins
                         pipeline = [
                             {"$match": {"guild_id": guild_id}},
@@ -362,30 +434,42 @@ class TerritorialBot(commands.Bot):
                             user_id = user_data["_id"]
                             total = user_data["total"]
                             
+
                             highest_reward = None
                             for reward in type_rewards:
                                 if total >= reward["amount"]:
                                     if not highest_reward or reward["amount"] > highest_reward["amount"]:
                                         highest_reward = reward
+                            
                             if not highest_reward:
                                 continue
+                            
                             reward = highest_reward
                             channel = guild.get_channel(reward["channel_id"])
                             role = guild.get_role(reward["role_id"])
+                            
                             if not channel or not role:
                                 continue
+
                             member = guild.get_member(user_id)
                             if not member:
                                 try:
                                     member = await guild.fetch_member(user_id)
                                 except:
                                     continue
+                            
+
                             key = f"{reward['_id']}_{user_id}"
+                            
                             if key in self.processed_rewards:
                                 continue
+                            
+
                             if role in member.roles:
                                 self.processed_rewards.add(key)
                                 continue
+                            
+
                             try:
                                 lower_roles_to_remove = []
                                 for lower_reward in type_rewards:
@@ -393,15 +477,23 @@ class TerritorialBot(commands.Bot):
                                         lower_role = guild.get_role(lower_reward["role_id"])
                                         if lower_role and lower_role in member.roles:
                                             lower_roles_to_remove.append(lower_role)
+                                
+
                                 if lower_roles_to_remove:
                                     await member.remove_roles(*lower_roles_to_remove, reason=f"Upgraded to higher milestone: {total:,.0f} {reward['type']}")
+                                
+
                                 await member.add_roles(role, reason=f"Milestone: {total:,.0f} {reward['type']}")
                                 self.processed_rewards.add(key)
+                                
+
                                 embed = discord.Embed(
                                     description=f"Congratulations {member.mention}, you have reached {total:,.0f} {reward['type']} and you are rewarded with {role.mention}",
                                     color=0x00ff00
                                 )
                                 await channel.send(embed=embed)
+                                
+
                                 log_channel = self.get_channel(1392150722698809374)
                                 if log_channel:
                                     log_embed = discord.Embed(
@@ -409,6 +501,7 @@ class TerritorialBot(commands.Bot):
                                         color=0x00ff00
                                     )
                                     await log_channel.send(embed=log_embed)
+                                
                             except discord.Forbidden:
                                 log_channel = self.get_channel(1392150722698809374)
                                 if log_channel:
@@ -417,6 +510,7 @@ class TerritorialBot(commands.Bot):
                                         color=0xff0000
                                     )
                                     await log_channel.send(embed=embed)
+                    
                             except Exception as e:
                                 log_channel = self.get_channel(1392150722698809374)
                                 if log_channel:
@@ -425,139 +519,424 @@ class TerritorialBot(commands.Bot):
                                         color=0xff0000
                                     )
                                     await log_channel.send(embed=embed)
+                
                 await asyncio.sleep(3)
+                
             except Exception as e:
                 logger.error(f"Error in reward monitoring: {e}")
                 await asyncio.sleep(3)
+    
     async def trigger_reward_check(self, user_id, guild_id):
         """Trigger immediate reward check for a user"""
+
         pass
-    async def on_message(self, message):
-        """Handle incoming messages for winlog monitoring"""
+    
+    async def scrape_territorial_winlogs(self):
+        """Scrape territorial.io for new win logs with comprehensive detection"""
         try:
-            # Only process messages from specific bots
-            if message.author.id not in [1129748745530114049, 780678948949721119]:
-                return
-            
-            if self.db is None or not message.guild or not message.content:
-                return
-            
-            # Check if this channel is a winlog channel
-            setting = await self.db.winlog_settings.find_one({
-                "guild_id": message.guild.id,
-                "channel_id": message.channel.id,
-                "active": True
-            })
-            
-            if not setting:
-                return
-            
-            # Check if already processed
-            msg_key = f"{message.id}"
-            if msg_key in self.processed_winlogs:
-                return
-            
-            content = message.content.strip()
-            if not content or "[" not in content:
-                return
-            
-            try:
-                # Check clan name filter if set
-                clan_filter = setting.get("clan_name")
-                if clan_filter:
-                    # Extract clan name from **CLAN** or CLAN format
-                    clan_match = None
-                    if content.startswith("**") and "**" in content[2:]:
-                        end_pos = content.find("**", 2)
-                        if end_pos > 2:
-                            clan_match = content[2:end_pos].strip()
-                    else:
-                        # Handle non-bold format like "PL    Australia"
-                        first_word = content.split()[0] if content.split() else ""
-                        clan_match = first_word
-                    
-                    if not clan_match or clan_filter.lower() not in clan_match.lower():
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get('https://territorial.io/clan-results', headers={'User-Agent': 'Mozilla/5.0'}) as response:
+                    if response.status != 200:
+                        logger.warning(f"HTTP {response.status} from territorial.io")
                         return
+                    
+                    content = await response.text()
+                    logger.info(f"Fetched {len(content)} characters from territorial.io")
+                    
+
+                    all_lines = content.strip().split('\n')
+                    lines = [line.strip() for line in all_lines if line.strip()]
+                    logger.info(f"Found {len(lines)} non-empty lines")
+                    
+                    if len(lines) < 8:
+                        logger.warning(f"Not enough lines: {len(lines)}")
+                        return
+                    
+
+                    time_indices = []
+                    for i, line in enumerate(lines):
+                        if line.startswith('Time:'):
+                            time_indices.append(i)
+                    
+                    logger.info(f"Found {len(time_indices)} Time entries at indices: {time_indices}")
+                    
+                    if not time_indices:
+                        logger.warning("No Time: entries found")
+                        return
+                    
+
+                    start_idx = time_indices[0]
+                    logger.info(f"Processing entry starting at line {start_idx}")
+                    
+
+                    if start_idx + 10 >= len(lines):
+                        logger.warning(f"Not enough lines after start_idx {start_idx}")
+                        return
+                    
+                    time_line = lines[start_idx]
+                    contest_line = lines[start_idx + 1]
+                    map_line = lines[start_idx + 2]
+                    player_count_line = lines[start_idx + 3]
+                    winning_clan_line = lines[start_idx + 4]
+                    prev_points_line = lines[start_idx + 5]
+                    gain_line = lines[start_idx + 6]
+                    curr_points_line = lines[start_idx + 7]
+                    
+
+                    payout_accounts = []
+                    logger.info(f"Looking for payout line in lines {start_idx + 8} to {start_idx + 12}")
+                    for i in range(start_idx + 8, min(len(lines), start_idx + 15)):
+                        logger.info(f"Line {i}: {lines[i]}")
+                        if lines[i].startswith('Payout:'):
+                            logger.info(f"Found payout line: {lines[i]}")
+                            payout_match = re.search(r'Payout:\s*(.+)', lines[i])
+                            if payout_match:
+                                payout_text = payout_match.group(1).strip()
+                                logger.info(f"Payout text: {payout_text}")
+                                
+
+                                patterns = [
+                                    r'([a-zA-Z0-9]{5})\s+[\d.]+',
+                                    r'([a-zA-Z0-9]{5})\s+\d+\.\d+',
+                                    r'([a-zA-Z0-9]{5})\s+\d+',
+                                    r'([a-zA-Z0-9]{5})\s*[\d.]+',
+                                    r'([a-zA-Z0-9]{5})'
+                                ]
+                                
+                                for pattern in patterns:
+                                    matches = re.findall(pattern, payout_text)
+                                    if matches:
+                                        payout_accounts = matches
+                                        logger.info(f"Pattern '{pattern}' matched: {payout_accounts}")
+                                        break
+                                
+
+                                if not payout_accounts:
+                                    parts = payout_text.split(',')
+                                    for part in parts:
+                                        part = part.strip()
+                                        account_match = re.search(r'^([a-zA-Z0-9]{5})', part)
+                                        if account_match:
+                                            payout_accounts.append(account_match.group(1))
+                                    logger.info(f"Comma parsing found: {payout_accounts}")
+                                
+
+                                validated_accounts = []
+                                for account in payout_accounts:
+                                    if len(account) == 5 and account.isalnum():
+                                        validated_accounts.append(account)
+                                payout_accounts = validated_accounts
+                                logger.info(f"Final validated accounts: {payout_accounts}")
+                            break
+                    
+
+                    time_patterns = [r'Time:\s*(.+)', r'Time:(.+)', r'Time\s*:\s*(.+)']
+                    win_time = None
+                    for pattern in time_patterns:
+                        time_match = re.search(pattern, time_line)
+                        if time_match:
+                            win_time = time_match.group(1).strip()
+                            break
+                    
+                    if not win_time:
+                        logger.error(f"Could not parse time from: {time_line}")
+                        return
+                    
+                    logger.info(f"Parsed time: {win_time}")
+                    
+
+                    if self.last_winlog_time == win_time:
+                        logger.info(f"Already processed log at time: {win_time}")
+                        return
+                    
+
+                    contest_patterns = [r'Contest:\s*(\w+)', r'Contest:(.+)', r'Contest\s*:\s*(\w+)']
+                    is_contest = False
+                    for pattern in contest_patterns:
+                        contest_match = re.search(pattern, contest_line)
+                        if contest_match:
+                            contest_value = contest_match.group(1).strip().lower()
+                            is_contest = contest_value in ['yes', 'true', '1']
+                            break
+                    
+                    logger.info(f"Contest status: {is_contest} from line: {contest_line}")
+                    
+
+                    map_patterns = [r'Map:\s*(.+)', r'Map:(.+)', r'Map\s*:\s*(.+)']
+                    map_name = 'Unknown'
+                    for pattern in map_patterns:
+                        map_match = re.search(pattern, map_line)
+                        if map_match:
+                            map_name = map_match.group(1).strip()
+                            break
+                    
+                    logger.info(f"Map: {map_name}")
+                    
+
+                    count_patterns = [r'Player Count:\s*(\d+)', r'Player Count:(\d+)', r'Player\s*Count\s*:\s*(\d+)']
+                    player_count = 0
+                    for pattern in count_patterns:
+                        player_count_match = re.search(pattern, player_count_line)
+                        if player_count_match:
+                            player_count = int(player_count_match.group(1))
+                            break
+                    
+                    if player_count == 0:
+                        logger.error(f"Could not parse player count from: {player_count_line}")
+                        return
+                    
+                    base_points = player_count
+                    points = base_points * 2 if is_contest else base_points
+                    logger.info(f"Player count: {player_count}, Base points: {base_points}, Final points: {points}, Contest: {is_contest}")
+                    
+
+                    clan_patterns = [r'Winning Clan:\s*\[([^\]]+)\]', r'Winning Clan:\s*\[(.+?)\]', r'Winning\s*Clan\s*:\s*\[([^\]]+)\]']
+                    winning_clan = None
+                    for pattern in clan_patterns:
+                        clan_match = re.search(pattern, winning_clan_line)
+                        if clan_match:
+                            winning_clan = clan_match.group(1).strip()
+                            break
+                    
+                    if not winning_clan:
+                        logger.error(f"Could not parse winning clan from: {winning_clan_line}")
+                        return
+                    
+                    logger.info(f"Winning clan: {winning_clan}")
+                    
+
+                    prev_patterns = [r'Prev\. Points:\s*([\d.]+)', r'Prev Points:\s*([\d.]+)', r'Prev\.?\s*Points\s*:\s*([\d.]+)']
+                    prev_points = '0'
+                    for pattern in prev_patterns:
+                        prev_points_match = re.search(pattern, prev_points_line)
+                        if prev_points_match:
+                            prev_points = prev_points_match.group(1)
+                            break
+                    
+
+                    curr_patterns = [r'Curr\. Points:\s*([\d.]+)', r'Curr Points:\s*([\d.]+)', r'Curr\.?\s*Points\s*:\s*([\d.]+)']
+                    curr_points = '0'
+                    for pattern in curr_patterns:
+                        curr_points_match = re.search(pattern, curr_points_line)
+                        if curr_points_match:
+                            curr_points = curr_points_match.group(1)
+                            break
+                    
+                    logger.info(f"Points change: {prev_points} -> {curr_points}")
+                    
+
+                    self.last_winlog_time = win_time
+                    
+
+                    await self.process_winlog_for_guilds(winning_clan, points, map_name, is_contest, player_count, prev_points, curr_points, win_time, payout_accounts)
+                    
+        except Exception as e:
+            logger.error(f"Error scraping territorial.io: {e}")
+    
+    async def process_winlog_for_guilds(self, winning_clan, points, map_name, is_contest, player_count, prev_points, curr_points, win_time, payout_accounts):
+        """Process win log for all configured guilds"""
+        try:
+            if self.db is None:
+                return
+            
+
+            settings = await self.db.winlog_settings.find({"active": True}).to_list(None)
+            
+            for setting in settings:
+                clan_filter = setting.get("clan_name", "").strip().lower()
+                winning_clan_lower = winning_clan.lower()
                 
-                # Parse points with multiple formats: 65, 2 x 122, etc.
-                parts = content.split()
-                points = 0
+
+                clan_matches = False
+                if clan_filter:
+
+                    if clan_filter == winning_clan_lower:
+                        clan_matches = True
+
+                    elif clan_filter in winning_clan_lower:
+                        logger.info(f"Partial match found: '{clan_filter}' in '{winning_clan_lower}'")
+
+
                 
-                for i, part in enumerate(parts):
-                    if "[" in part:
-                        # Check for "2 x 122" format (3 parts before bracket)
-                        if i >= 3 and parts[i-2].lower() == 'x':
-                            try:
-                                base = int(parts[i-3])
-                                mult = int(parts[i-1])
-                                points = base * mult
+                logger.info(f"Clan filter '{clan_filter}' vs winning clan '{winning_clan_lower}': matches={clan_matches}")
+                
+                if not clan_matches:
+                    continue
+                
+                guild = self.get_guild(setting["guild_id"])
+                if not guild:
+                    continue
+                
+                channel = guild.get_channel(setting["channel_id"])
+                if not channel:
+                    continue
+                
+
+                auto_credited = []
+                logger.info(f"Processing auto-credit for {len(payout_accounts)} payout accounts: {payout_accounts}")
+                
+                for payout_account in payout_accounts:
+                    logger.info(f"Checking account: {payout_account} in guild {guild.id}")
+                    
+
+                    linked_user = await self.db.account_links.find_one({
+                        "account_name": payout_account,
+                        "guild_id": guild.id
+                    })
+                    
+
+                    if not linked_user:
+                        all_links = await self.db.account_links.find({"guild_id": guild.id}).to_list(None)
+                        for link in all_links:
+                            if link["account_name"].lower() == payout_account.lower():
+                                linked_user = link
                                 break
-                            except (ValueError, IndexError):
-                                pass
+                    
+                    logger.info(f"Account {payout_account} linked user: {linked_user}")
+                    
+                    if linked_user:
+                        user_id = linked_user["user_id"]
+                        logger.info(f"Found linked user {user_id} for account {payout_account}")
                         
-                        # Check for single number before bracket
-                        if i > 0:
+
+                        user = guild.get_member(user_id)
+                        if not user:
                             try:
-                                points = int(parts[i-1])
-                                break
-                            except (ValueError, IndexError):
+                                user = await guild.fetch_member(user_id)
+                            except:
+                                logger.warning(f"User {user_id} not found in guild {guild.id}")
                                 continue
+                        
+                        logger.info(f"Adding points to user {user.display_name} ({user_id})")
+                        
+
+                        success = await self.add_winlog_points(user_id, guild.id, points)
+                        
+                        if success:
+                            auto_credited.append(f"<@{user_id}>")
+                            logger.info(f"Successfully auto-credited {user.display_name}")
+                            
+
+                            try:
+                                multiplier_data = await self.db.multipliers.find_one({"guild_id": guild.id, "active": True})
+                                server_multiplier = multiplier_data["multiplier"] if multiplier_data else 1.0
+                                final_points = points * server_multiplier
+                                
+                                embed = discord.Embed(
+                                    title="🎉 Auto-Credited Points!",
+                                    description=f"You received **{final_points:,.1f} points** and **1 win** from [{winning_clan}] win on {map_name}!\n\nAccount: `{payout_account}`",
+                                    color=0x00ff00
+                                )
+                                if is_contest:
+                                    embed.description += "\n*Contest game - double points!*"
+                                
+                                await user.send(embed=embed)
+                                logger.info(f"DM sent to {user.display_name}")
+                            except Exception as dm_error:
+                                logger.warning(f"Failed to send DM to {user.display_name}: {dm_error}")
+                        else:
+                            logger.error(f"Failed to add points to {user.display_name}")
+                    else:
+                        logger.info(f"No linked user found for account {payout_account} in guild {guild.id}")
                 
-                if points <= 0:
-                    return
-                self.processed_winlogs.add(msg_key)
-                try:
-                    await message.delete()
-                except (discord.NotFound, discord.Forbidden):
-                    pass
-                view = WinLogClaimView(self, points, message.id, message.guild.id, content)
+                logger.info(f"Auto-credited {len(auto_credited)} users: {auto_credited}")
+                
+
+                if is_contest:
+                    description = f"[{winning_clan}] won on {map_name} (Contest)\n{player_count} players x2 = {points} points available to claim!\n[{prev_points} → {curr_points}]"
+                else:
+                    description = f"[{winning_clan}] won on {map_name}\n{points} points available to claim!\n[{prev_points} → {curr_points}]"
+                
+                if auto_credited:
+                    description += f"\n\n**Auto-credited:** {', '.join(auto_credited)}"
+                
+
+                view = WinLogClaimView(self, points, hash(win_time), guild.id, description)
+                
+
                 embed = discord.Embed(
                     title="🏆 Win Log",
-                    description=content,
+                    description=description,
                     color=0x00ff00
                 )
                 embed.set_footer(text="Click to claim points • Expires in 5 minutes")
+                
                 try:
-                    sent_message = await message.channel.send(embed=embed, view=view)
-                    view.message = sent_message  # Store message reference
-                except (discord.Forbidden, discord.HTTPException):
-                    pass
-            except Exception as e:
-                logger.error(f"Error processing winlog message {message.id}: {e}")
+                    sent_message = await channel.send(embed=embed, view=view)
+                    view.message = sent_message
+                except (discord.Forbidden, discord.HTTPException) as e:
+                    logger.error(f"Failed to send winlog to {guild.name}: {e}")
+                    
         except Exception as e:
-            logger.error(f"Error in on_message winlog handler: {e}")
+            logger.error(f"Error processing winlog for guilds: {e}")
+    
     def start_winlog_monitoring(self):
-        logger.info("Win log monitoring enabled via on_message event")
+        """Start win log monitoring task"""
+        if self.winlog_monitor is None or self.winlog_monitor.done():
+            self.winlog_monitor = asyncio.create_task(self.monitor_winlogs())
+            logger.info("Started territorial.io win log monitoring")
+    
+    async def monitor_winlogs(self):
+        """Monitor territorial.io for new win logs every 1 second"""
+        while True:
+            try:
+                await self.scrape_territorial_winlogs()
+                await asyncio.sleep(1)
+            except Exception as e:
+                logger.error(f"Error in winlog monitoring: {e}")
+                await asyncio.sleep(1)
+    
     def start_war_monitoring(self):
+        """Start war monitoring task"""
         if not hasattr(self, 'war_monitor') or self.war_monitor is None or self.war_monitor.done():
             self.war_monitor = asyncio.create_task(self.monitor_wars())
             logger.info("Started war monitoring")
+    
     async def monitor_wars(self):
+        """Monitor active wars and end them when time expires"""
         while True:
             try:
                 if self.db is None:
                     await asyncio.sleep(10)
                     continue
+                
+
                 active_wars = await self.db.cult_wars.find({"active": True}).to_list(None)
+                
                 for war in active_wars:
-                    if datetime.now(timezone.utc) >= war["end_time"]:
+                    end_time = war["end_time"]
+                    if end_time.tzinfo is None:
+                        end_time = end_time.replace(tzinfo=timezone.utc)
+                    if datetime.now(timezone.utc) >= end_time:
                         await self.end_war_automatically(war)
-                await asyncio.sleep(10) 
+                
+                await asyncio.sleep(10)
+                
             except Exception as e:
                 logger.error(f"Error in war monitoring: {e}")
                 await asyncio.sleep(10)
+    
     async def end_war_automatically(self, war):
+        """Automatically end a war and determine winner"""
         try:
             guild = self.get_guild(war["guild_id"])
             if not guild:
                 return
+            
+
             from bson import ObjectId
             attacker_cult = await self.db.cults.find_one({"_id": ObjectId(war["attacker_cult_id"])})
             defender_cult = await self.db.cults.find_one({"_id": ObjectId(war["defender_cult_id"])})
+            
             if not attacker_cult or not defender_cult:
                 return
+            
+
             attacker_score = await self.calculate_war_score(attacker_cult, war)
             defender_score = await self.calculate_war_score(defender_cult, war)
+            
+
             if attacker_score > defender_score:
                 winner_cult = attacker_cult
                 loser_cult = defender_cult
@@ -569,9 +948,11 @@ class TerritorialBot(commands.Bot):
                 winner_score = defender_score
                 loser_score = attacker_score
             else:
-                winner_cult = None  
+                winner_cult = None
                 winner_score = attacker_score
                 loser_score = defender_score
+            
+
             await self.db.cult_wars.update_one(
                 {"_id": war["_id"]},
                 {
@@ -585,6 +966,8 @@ class TerritorialBot(commands.Bot):
                     }
                 }
             )
+            
+
             if winner_cult:
                 embed = discord.Embed(
                     title="🏆 WAR ENDED - VICTORY!",
@@ -598,17 +981,25 @@ class TerritorialBot(commands.Bot):
                     description=f"The war between {attacker_cult['cult_icon']} **{attacker_cult['cult_name']}** and {defender_cult['cult_icon']} **{defender_cult['cult_name']}** ended in a tie!",
                     color=0xffa500
                 )
-                embed.add_field(name="Final Scores", value=f"{attacker_cult['cult_name']}: {attacker_score:,.0f}\n{defender_cult['cult_name']}: {defender_score:,.0f}", inline=True) 
+                embed.add_field(name="Final Scores", value=f"{attacker_cult['cult_name']}: {attacker_score:,.0f}\n{defender_cult['cult_name']}: {defender_score:,.0f}", inline=True)
+            
             embed.add_field(name="War Type", value=war["race_type"].title(), inline=True)
+            
+
             all_members = set(attacker_cult["members"] + defender_cult["members"])
             ping_mentions = " ".join([f"<@{user_id}>" for user_id in all_members])
+            
+
             channel = None
             for ch in guild.text_channels:
                 if ch.permissions_for(guild.me).send_messages:
                     channel = ch
                     break
+            
             if channel:
                 await channel.send(f"{ping_mentions}\n", embed=embed)
+            
+
             for user_id in all_members:
                 try:
                     user = guild.get_member(user_id)
@@ -616,11 +1007,14 @@ class TerritorialBot(commands.Bot):
                         await user.send(embed=embed)
                 except:
                     pass
+            
         except Exception as e:
             logger.error(f"Error ending war automatically: {e}")
+    
     async def calculate_war_score(self, cult, war):
         """Calculate cult's score for the war period"""
         total_score = 0
+        
         for member_id in cult["members"]:
             if war["race_type"] in ["points", "both"]:
                 points_result = await self.db.points.aggregate([
@@ -632,6 +1026,7 @@ class TerritorialBot(commands.Bot):
                     {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
                 ]).to_list(1)
                 total_score += points_result[0]["total"] if points_result else 0
+            
             if war["race_type"] in ["wins", "both"]:
                 wins_result = await self.db.wins.aggregate([
                     {"$match": {
@@ -642,28 +1037,51 @@ class TerritorialBot(commands.Bot):
                     {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
                 ]).to_list(1)
                 total_score += wins_result[0]["total"] if wins_result else 0
+        
         return total_score
+    
     async def add_winlog_points(self, user_id, guild_id, points):
+        """Add points from winlog claim with extensive validation"""
         try:
+            logger.info(f"Starting add_winlog_points for user {user_id}, guild {guild_id}, points {points}")
+            
             if self.db is None:
+                logger.error("Database is None")
                 return False
+                
             guild = self.get_guild(guild_id)
             if not guild:
+                logger.error(f"Guild {guild_id} not found")
                 return False
+            
             user = guild.get_member(user_id)
             if not user:
                 try:
                     user = await guild.fetch_member(user_id)
-                except:
+                    logger.info(f"Fetched user {user_id} from API")
+                except Exception as fetch_error:
+                    logger.error(f"Failed to fetch user {user_id}: {fetch_error}")
                     return False
+            
+            logger.info(f"Processing points for user {user.display_name} ({user_id})")
+            
+
             multiplier = 1.0
             try:
                 multiplier_data = await self.db.multipliers.find_one({"guild_id": guild_id, "active": True})
                 if multiplier_data and "multiplier" in multiplier_data:
                     multiplier = float(multiplier_data["multiplier"])
-            except:
-                pass
+                    logger.info(f"Server multiplier: {multiplier}")
+                else:
+                    logger.info("No server multiplier found, using 1.0")
+            except Exception as mult_error:
+                logger.warning(f"Error getting multiplier: {mult_error}")
+            
+
             final_points = points * multiplier
+            logger.info(f"Final points calculation: {points} * {multiplier} = {final_points}")
+            
+
             user_cult_data = None
             try:
                 user_cult_data = await self.db.cults.find_one({
@@ -671,9 +1089,16 @@ class TerritorialBot(commands.Bot):
                     "members": user_id,
                     "active": True
                 })
-            except:
-                pass
-            await self.db.points.insert_one({
+                if user_cult_data:
+                    logger.info(f"User is in cult: {user_cult_data['cult_name']}")
+                else:
+                    logger.info("User is not in any cult")
+            except Exception as cult_error:
+                logger.warning(f"Error getting cult data: {cult_error}")
+            
+
+            timestamp = datetime.now(timezone.utc)
+            points_data = {
                 "user_id": user_id,
                 "user_name": str(user),
                 "guild_id": guild_id,
@@ -683,10 +1108,11 @@ class TerritorialBot(commands.Bot):
                 "multiplier_used": multiplier,
                 "cult_id": str(user_cult_data["_id"]) if user_cult_data else None,
                 "cult_name": user_cult_data["cult_name"] if user_cult_data else None,
-                "type": "winlog",
-                "timestamp": datetime.now(timezone.utc)
-            })
-            await self.db.wins.insert_one({
+                "type": "winlog_auto",
+                "timestamp": timestamp
+            }
+            
+            wins_data = {
                 "user_id": user_id,
                 "user_name": str(user),
                 "guild_id": guild_id,
@@ -694,13 +1120,41 @@ class TerritorialBot(commands.Bot):
                 "amount": 1,
                 "cult_id": str(user_cult_data["_id"]) if user_cult_data else None,
                 "cult_name": user_cult_data["cult_name"] if user_cult_data else None,
-                "type": "winlog",
-                "timestamp": datetime.now(timezone.utc)
-            })
+                "type": "winlog_auto",
+                "timestamp": timestamp
+            }
+            
+
+            try:
+                points_result = await self.db.points.insert_one(points_data)
+                logger.info(f"Points transaction saved with ID: {points_result.inserted_id}")
+            except Exception as points_error:
+                logger.error(f"Failed to save points transaction: {points_error}")
+                return False
+            
+
+            try:
+                wins_result = await self.db.wins.insert_one(wins_data)
+                logger.info(f"Wins transaction saved with ID: {wins_result.inserted_id}")
+            except Exception as wins_error:
+                logger.error(f"Failed to save wins transaction: {wins_error}")
+
+                try:
+                    await self.db.points.delete_one({"_id": points_result.inserted_id})
+                    logger.info("Rolled back points transaction")
+                except:
+                    logger.error("Failed to rollback points transaction")
+                return False
+            
+            logger.info(f"Successfully added {final_points} points and 1 win to {user.display_name}")
             return True
+            
         except Exception as e:
-            logger.error(f"Error adding winlog points: {e}")
+            logger.error(f"Error adding winlog points to user {user_id}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return False
+    
     async def close(self):
         """Clean shutdown"""
         try:
@@ -709,44 +1163,66 @@ class TerritorialBot(commands.Bot):
                 logger.info("Reward monitoring stopped")
         except Exception as e:
             logger.error(f"Error stopping reward monitoring: {e}")
+        
         try:
             if hasattr(self, 'war_monitor') and self.war_monitor:
                 self.war_monitor.cancel()
                 logger.info("War monitoring stopped")
         except Exception as e:
             logger.error(f"Error stopping war monitoring: {e}")
+        
+        try:
+            if self.winlog_monitor:
+                self.winlog_monitor.cancel()
+                logger.info("Win log monitoring stopped")
+        except Exception as e:
+            logger.error(f"Error stopping winlog monitoring: {e}")
+        
         try:
             if self.mongodb_client:
                 self.mongodb_client.close()
                 logger.info("MongoDB connection closed")
         except Exception as e:
             logger.error(f"Error closing MongoDB: {e}")
+        
         await super().close()
+
+
 async def health_check(request):
     return web.Response(text="Bot is running", status=200)
+
 async def start_health_server():
     app = web.Application()
     app.router.add_get('/health', health_check)
     app.router.add_get('/', health_check)
+    
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8000)))
     await site.start()
     print(f"Health server started on port {os.getenv('PORT', 8000)}")
+
 async def main():
+    """Main function to run the bot"""
     bot = TerritorialBot()
+    
     try:
+
         await start_health_server()
+        
         discord_token = os.getenv('DISCORD_TOKEN')
         if not discord_token:
             logger.error("DISCORD_TOKEN not found in environment variables")
             return
+        
         await bot.start(discord_token)
+        
     except KeyboardInterrupt:
         logger.info("Bot shutdown requested")
     except Exception as e:
         logger.error(f"Bot error: {e}")
     finally:
         await bot.close()
+
 if __name__ == "__main__":
     asyncio.run(main())

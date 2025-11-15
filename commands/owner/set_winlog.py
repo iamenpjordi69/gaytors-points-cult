@@ -1,11 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-from datetime import datetime
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-from utils.permissions import check_bot_manager
+from datetime import datetime, timezone
 
 class SetWinlog(commands.Cog):
     def __init__(self, bot):
@@ -13,15 +9,17 @@ class SetWinlog(commands.Cog):
     
     @app_commands.command(name="set_winlog", description="Set win log channel")
     @app_commands.describe(
-        channel="Channel to monitor for win logs",
-        clan_name="Clan name to filter (optional, case insensitive)"
+        channel="Channel to send win logs",
+        clan_name="Clan name to filter (required, case insensitive)"
     )
-    async def set_winlog(self, interaction: discord.Interaction, channel: discord.TextChannel, clan_name: str = None):
+    async def set_winlog(self, interaction: discord.Interaction, channel: discord.TextChannel, clan_name: str):
         try:
-            # Permission check
-            if not await check_bot_manager(self.bot, interaction):
-                await interaction.response.send_message("❌ You need Bot Manager role to use this command!", ephemeral=True)
-                return
+            # Permission check - specific user always allowed
+            if interaction.user.id != 780678948949721119:
+                # Check if server owner
+                if not interaction.guild.owner or interaction.user.id != interaction.guild.owner.id:
+                    await interaction.response.send_message("❌ Only server owner or authorized user can use this command!", ephemeral=True)
+                    return
             
             if self.bot.db is None:
                 await interaction.response.send_message("❌ Database not available!", ephemeral=True)
@@ -41,18 +39,17 @@ class SetWinlog(commands.Cog):
                 "channel_name": channel.name,
                 "set_by": interaction.user.id,
                 "set_by_name": str(interaction.user),
-                "timestamp": datetime.utcnow(),
+                "timestamp": datetime.now(timezone.utc),
                 "active": True
             }
             
-            if clan_name:
-                settings_data["clan_name"] = clan_name.strip()
+            settings_data["clan_name"] = clan_name.strip()
             
-            await self.bot.db.winlog_settings.update_one(
-                {"guild_id": guild_id},
-                {"$set": settings_data},
-                upsert=True
-            )
+            # Delete existing settings first to ensure clean replacement
+            await self.bot.db.winlog_settings.delete_many({"guild_id": guild_id})
+            
+            # Insert new settings
+            await self.bot.db.winlog_settings.insert_one(settings_data)
             
             # Create embed
             embed = discord.Embed(
@@ -63,8 +60,7 @@ class SetWinlog(commands.Cog):
             embed.add_field(name="Set by", value=interaction.user.mention, inline=True)
             embed.add_field(name="Server", value=interaction.guild.name, inline=True)
             
-            if clan_name:
-                embed.add_field(name="Clan Filter", value=f"Only **{clan_name}** messages", inline=True)
+            embed.add_field(name="Clan Filter", value=f"Only **{clan_name}** wins", inline=True)
             
             await interaction.response.send_message(embed=embed)
             

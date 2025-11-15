@@ -12,7 +12,7 @@ class AllianceView(discord.ui.View):
     
     @discord.ui.button(label="Accept Alliance", style=discord.ButtonStyle.success, emoji="🤝")
     async def accept_alliance(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Check if user is leader or officer of target cult
+
         is_leader = self.target_cult["cult_leader_id"] == interaction.user.id
         is_officer = False
         
@@ -24,7 +24,7 @@ class AllianceView(discord.ui.View):
             await interaction.response.send_message("❌ Only the target cult's leader or officers can accept this alliance!", ephemeral=True)
             return
         
-        # Create alliance record
+
         alliance_data = {
             "guild_id": self.guild_id,
             "cult1_id": str(self.proposer_cult["_id"]),
@@ -39,7 +39,7 @@ class AllianceView(discord.ui.View):
         bot = interaction.client
         await bot.db.cult_alliances.insert_one(alliance_data)
         
-        # Update embed
+
         embed = discord.Embed(
             title="🤝 Alliance Formed!",
             description=f"{self.proposer_cult['cult_icon']} **{self.proposer_cult['cult_name']}** and {self.target_cult['cult_icon']} **{self.target_cult['cult_name']}** are now allied!",
@@ -51,7 +51,7 @@ class AllianceView(discord.ui.View):
     
     @discord.ui.button(label="Decline Alliance", style=discord.ButtonStyle.danger, emoji="❌")
     async def decline_alliance(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Check if user is leader or officer of target cult
+
         is_leader = self.target_cult["cult_leader_id"] == interaction.user.id
         is_officer = False
         
@@ -63,7 +63,7 @@ class AllianceView(discord.ui.View):
             await interaction.response.send_message("❌ Only the target cult's leader or officers can decline this alliance!", ephemeral=True)
             return
         
-        # Update embed
+
         embed = discord.Embed(
             title="❌ Alliance Declined",
             description=f"{self.target_cult['cult_icon']} **{self.target_cult['cult_name']}** has declined the alliance with {self.proposer_cult['cult_icon']} **{self.proposer_cult['cult_name']}**.",
@@ -81,14 +81,14 @@ class CultAlliance(commands.Cog):
         if not interaction.guild or self.bot.db is None:
             return []
         
-        # Get user's cult to exclude it
+
         user_cult = await self.bot.db.cults.find_one({
             "guild_id": interaction.guild.id,
             "cult_leader_id": interaction.user.id,
             "active": True
         })
         
-        # Get all other cults
+
         query = {"guild_id": interaction.guild.id, "active": True}
         if user_cult:
             query["_id"] = {"$ne": user_cult["_id"]}
@@ -109,7 +109,7 @@ class CultAlliance(commands.Cog):
             await interaction.response.send_message("❌ Database not available!", ephemeral=True)
             return
         
-        # Find user's cult where they are leader
+
         user_cult = await self.bot.db.cults.find_one({
             "guild_id": interaction.guild.id,
             "cult_leader_id": interaction.user.id,
@@ -120,7 +120,7 @@ class CultAlliance(commands.Cog):
             await interaction.response.send_message("❌ You must be a cult leader to propose alliances!", ephemeral=True)
             return
         
-        # Find target cult
+
         target = await self.bot.db.cults.find_one({
             "guild_id": interaction.guild.id,
             "cult_name": target_cult,
@@ -131,7 +131,7 @@ class CultAlliance(commands.Cog):
             await interaction.response.send_message("❌ Target cult not found!", ephemeral=True)
             return
         
-        # Check for existing alliance
+
         existing_alliance = await self.bot.db.cult_alliances.find_one({
             "$or": [
                 {"cult1_id": str(user_cult["_id"]), "cult2_id": str(target["_id"])},
@@ -145,7 +145,7 @@ class CultAlliance(commands.Cog):
             await interaction.response.send_message("❌ Alliance already exists between these cults!", ephemeral=True)
             return
         
-        # Create proposal embed
+
         embed = discord.Embed(
             title="🤝 Alliance Proposal",
             description=f"{user_cult['cult_icon']} **{user_cult['cult_name']}** proposes an alliance with {target['cult_icon']} **{target['cult_name']}**!",
@@ -154,7 +154,7 @@ class CultAlliance(commands.Cog):
         embed.add_field(name="Proposed by", value=interaction.user.mention, inline=True)
         embed.add_field(name="Benefits", value="• Cannot declare war on each other\n• Diplomatic cooperation", inline=False)
         
-        # Get target cult leader and officers to ping
+
         ping_users = {target["cult_leader_id"]}
         if target.get("officer_role_id"):
             officer_role = interaction.guild.get_role(target["officer_role_id"])
