@@ -11,11 +11,9 @@ class BotManager(commands.Cog):
     @app_commands.describe(role="Role to set as bot manager")
     async def set_bot_manager(self, interaction: discord.Interaction, role: discord.Role):
 
-        if interaction.user.id != 780678948949721119:
-
-            if not interaction.user.guild_permissions.administrator:
-                await interaction.response.send_message("❌ Administrator permission required!", ephemeral=True)
-                return
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Administrator permission required!", ephemeral=True)
+            return
         
         if self.bot.db is None:
             await interaction.response.send_message("❌ Database not available!", ephemeral=True)
