@@ -15,8 +15,8 @@ class AccountLinking(commands.Cog):
     async def account_linking(self, interaction: discord.Interaction, account_name: str, user: discord.Member):
         try:
             # Check if user is authorized
-            if interaction.user.id != 780678948949721119:
-                await interaction.response.send_message("❌ You are not authorized to use this command!", ephemeral=True)
+            if not interaction.user.guild_permissions.administrator:
+                await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
                 return
             
             if self.bot.db is None:
