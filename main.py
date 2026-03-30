@@ -510,7 +510,16 @@ class TerritorialBot(commands.Bot):
     
     async def scrape_territorial_winlogs(self):
         try:
-            async with self.session.get('https://territorial.io/clan-results', headers={'User-Agent': 'Mozilla/5.0'}) as response:
+            import time
+            # Cache-buster to prevent Cloudflare from serving stale data to our persistent session
+            url = f"https://territorial.io/clan-results?_t={int(time.time())}"
+            headers = {
+                'User-Agent': 'Mozilla/5.0',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache'
+            }
+            
+            async with self.session.get(url, headers=headers) as response:
                 if response.status != 200:
                     logger.warning(f"HTTP {response.status} from territorial.io")
                     return
@@ -528,112 +537,126 @@ class TerritorialBot(commands.Bot):
                 if not time_indices:
                     return
                 
-                start_idx = time_indices[0]
-                
-                if start_idx + 10 >= len(lines):
-                    return
-                
-                time_line = lines[start_idx]
-                contest_line = lines[start_idx + 1]
-                map_line = lines[start_idx + 2]
-                player_count_line = lines[start_idx + 3]
-                winning_clan_line = lines[start_idx + 4]
-                prev_points_line = lines[start_idx + 5]
-                curr_points_line = lines[start_idx + 7]
-                
-                payout_accounts = []
-                
-                for i in range(start_idx + 8, min(len(lines), start_idx + 15)):
-                    current_line = lines[i]
+                # --- UPGRADED LOGIC: Catch ALL missed logs instead of just the top one ---
+                logs_to_process = []
+                for start_idx in time_indices:
+                    if start_idx + 10 >= len(lines):
+                        continue
+                        
+                    time_line = lines[start_idx]
+                    win_time = None
+                    for pattern in TIME_PATTERNS:
+                        time_match = pattern.search(time_line)
+                        if time_match:
+                            win_time = time_match.group(1).strip()
+                            break
                     
-                    if 'Payout' in current_line or 'payout' in current_line.lower():
-                        payout_text = current_line.split(':', 1)[1].strip() if ':' in current_line else current_line.replace('Payout', '').replace('payout', '').strip()
+                    # Prevent spam on bot reboot: only grab the newest log if memory is empty
+                    if not self.last_winlog_time:
+                        logs_to_process.append((start_idx, win_time))
+                        break
                         
-                        method1 = PAYOUT_METHOD1_RE.findall(payout_text)
+                    # If we hit a log we already processed, stop going down the list
+                    if win_time == self.last_winlog_time:
+                        break
                         
-                        method2 = []
-                        for part in payout_text.split(','):
-                            match = PAYOUT_METHOD2_RE.search(part.strip())
-                            if match: method2.append(match.group(1))
+                    logs_to_process.append((start_idx, win_time))
+                
+                if not logs_to_process:
+                    return
+
+                # Process oldest to newest so last_winlog_time updates chronologically
+                for start_idx, win_time in reversed(logs_to_process):
+                    contest_line = lines[start_idx + 1]
+                    map_line = lines[start_idx + 2]
+                    player_count_line = lines[start_idx + 3]
+                    winning_clan_line = lines[start_idx + 4]
+                    prev_points_line = lines[start_idx + 5]
+                    curr_points_line = lines[start_idx + 7]
+                    
+                    payout_accounts = []
+                    
+                    for i in range(start_idx + 8, min(len(lines), start_idx + 15)):
+                        current_line = lines[i]
+                        
+                        if 'Payout' in current_line or 'payout' in current_line.lower():
+                            payout_text = current_line.split(':', 1)[1].strip() if ':' in current_line else current_line.replace('Payout', '').replace('payout', '').strip()
                             
-                        method3 = PAYOUT_METHOD3_RE.findall(payout_text)
-                        
-                        method4 = []
-                        for word in payout_text.replace(',', ' ').split():
-                            clean_word = ''.join(c for c in word if c.isalnum())
-                            if len(clean_word) == 5: method4.append(clean_word)
-                        
-                        all_accounts = method1 + method2 + method3 + method4
-                        seen = set()
-                        for acc in all_accounts:
-                            if len(acc) == 5 and acc.isalnum() and acc not in seen:
-                                payout_accounts.append(acc)
-                                seen.add(acc)
-                        break
-                
-                win_time = None
-                for pattern in TIME_PATTERNS:
-                    time_match = pattern.search(time_line)
-                    if time_match:
-                        win_time = time_match.group(1).strip()
-                        break
-                
-                if not win_time or self.last_winlog_time == win_time:
-                    return
-                
-                is_contest = False
-                for pattern in CONTEST_PATTERNS:
-                    contest_match = pattern.search(contest_line)
-                    if contest_match:
-                        is_contest = contest_match.group(1).strip().lower() in ['yes', 'true', '1']
-                        break
-                
-                map_name = 'Unknown'
-                for pattern in MAP_PATTERNS:
-                    map_match = pattern.search(map_line)
-                    if map_match:
-                        map_name = map_match.group(1).strip()
-                        break
-                
-                player_count = 0
-                for pattern in COUNT_PATTERNS:
-                    player_count_match = pattern.search(player_count_line)
-                    if player_count_match:
-                        player_count = int(player_count_match.group(1))
-                        break
-                
-                if player_count == 0:
-                    return
-                
-                base_points = player_count
-                points = base_points * 2 if is_contest else base_points
-                
-                winning_clan = None
-                for pattern in CLAN_PATTERNS:
-                    clan_match = pattern.search(winning_clan_line)
-                    if clan_match:
-                        winning_clan = clan_match.group(1).strip()
-                        break
-                
-                if not winning_clan:
-                    return
-                
-                prev_points = '0'
-                for pattern in PREV_PATTERNS:
-                    prev_points_match = pattern.search(prev_points_line)
-                    if prev_points_match:
-                        prev_points = prev_points_match.group(1)
-                        break
-                
-                curr_points = '0'
-                for pattern in CURR_PATTERNS:
-                    curr_points_match = pattern.search(curr_points_line)
-                    if curr_points_match:
-                        curr_points = curr_points_match.group(1)
-                        break
-                
-                self.last_winlog_time = win_time
-                await self.process_winlog_for_guilds(winning_clan, points, map_name, is_contest, player_count, prev_points, curr_points, win_time, payout_accounts)
+                            method1 = PAYOUT_METHOD1_RE.findall(payout_text)
+                            
+                            method2 = []
+                            for part in payout_text.split(','):
+                                match = PAYOUT_METHOD2_RE.search(part.strip())
+                                if match: method2.append(match.group(1))
+                                
+                            method3 = PAYOUT_METHOD3_RE.findall(payout_text)
+                            
+                            method4 = []
+                            for word in payout_text.replace(',', ' ').split():
+                                clean_word = ''.join(c for c in word if c.isalnum())
+                                if len(clean_word) == 5: method4.append(clean_word)
+                            
+                            all_accounts = method1 + method2 + method3 + method4
+                            seen = set()
+                            for acc in all_accounts:
+                                if len(acc) == 5 and acc.isalnum() and acc not in seen:
+                                    payout_accounts.append(acc)
+                                    seen.add(acc)
+                            break
+                    
+                    is_contest = False
+                    for pattern in CONTEST_PATTERNS:
+                        contest_match = pattern.search(contest_line)
+                        if contest_match:
+                            is_contest = contest_match.group(1).strip().lower() in ['yes', 'true', '1']
+                            break
+                    
+                    map_name = 'Unknown'
+                    for pattern in MAP_PATTERNS:
+                        map_match = pattern.search(map_line)
+                        if map_match:
+                            map_name = map_match.group(1).strip()
+                            break
+                    
+                    player_count = 0
+                    for pattern in COUNT_PATTERNS:
+                        player_count_match = pattern.search(player_count_line)
+                        if player_count_match:
+                            player_count = int(player_count_match.group(1))
+                            break
+                    
+                    if player_count == 0:
+                        continue
+                    
+                    base_points = player_count
+                    points = base_points * 2 if is_contest else base_points
+                    
+                    winning_clan = None
+                    for pattern in CLAN_PATTERNS:
+                        clan_match = pattern.search(winning_clan_line)
+                        if clan_match:
+                            winning_clan = clan_match.group(1).strip()
+                            break
+                    
+                    if not winning_clan:
+                        continue
+                    
+                    prev_points = '0'
+                    for pattern in PREV_PATTERNS:
+                        prev_points_match = pattern.search(prev_points_line)
+                        if prev_points_match:
+                            prev_points = prev_points_match.group(1)
+                            break
+                    
+                    curr_points = '0'
+                    for pattern in CURR_PATTERNS:
+                        curr_points_match = pattern.search(curr_points_line)
+                        if curr_points_match:
+                            curr_points = curr_points_match.group(1)
+                            break
+                    
+                    self.last_winlog_time = win_time
+                    await self.process_winlog_for_guilds(winning_clan, points, map_name, is_contest, player_count, prev_points, curr_points, win_time, payout_accounts)
                     
         except Exception as e:
             logger.error(f"Error scraping territorial.io: {e}")
