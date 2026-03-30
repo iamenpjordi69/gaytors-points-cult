@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from aiohttp import web
 import aiohttp
 import re
+import random
 from datetime import datetime, timezone, timedelta
 
 
@@ -940,15 +941,21 @@ class TerritorialBot(commands.Bot):
             self.winlog_monitor = asyncio.create_task(self.monitor_winlogs())
             logger.info("Started territorial.io win log monitoring")
     
+
+
     async def monitor_winlogs(self):
-        """Monitor territorial.io for new win logs every 1 second"""
+        """Monitor territorial.io for new win logs"""
         while True:
             try:
-                await self.scrape_territorial_winlogs()
-                await asyncio.sleep(1)
+                await self.scrape_territorial_winlogs()                
+                # Wait 5–8 seconds (randomized to avoid blocking)
+                await asyncio.sleep(5 + random.uniform(0, 3))
+                
             except Exception as e:
                 logger.error(f"Error in winlog monitoring: {e}")
-                await asyncio.sleep(1)
+                
+                # Cooldown on error
+                await asyncio.sleep(10)
     
     def start_war_monitoring(self):
         """Start war monitoring task"""
