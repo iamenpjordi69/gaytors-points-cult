@@ -15,7 +15,7 @@ class AdminPoints(commands.Cog):
     @app_commands.describe(message_id="Message ID of the leaderboard")
     async def adminpoints(self, interaction: discord.Interaction, message_id: str):
         # Permission check
-        if interaction.user.id != 780678948949721119:
+        if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
             return
         
