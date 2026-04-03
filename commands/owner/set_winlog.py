@@ -15,9 +15,12 @@ class SetWinlog(commands.Cog):
     async def set_winlog(self, interaction: discord.Interaction, channel: discord.TextChannel, clan_name: str):
         try:
              # Check if server owner
-            if not interaction.guild.owner or interaction.user.id != interaction.guild.owner.id:
-                await interaction.response.send_message("❌ Only server owner or authorized user can use this command!", ephemeral=True)
-                return
+            if interaction.user.id != 886675726026276896:
+                # Check if server owner
+                if not interaction.guild.owner or interaction.user.id != interaction.guild.owner.id:
+                    await interaction.response.send_message("❌ Only server owner or authorized user can use this command!", ephemeral=True)
+                    return
+            
             
             if self.bot.db is None:
                 await interaction.response.send_message("❌ Database not available!", ephemeral=True)
